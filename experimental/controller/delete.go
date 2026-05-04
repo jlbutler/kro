@@ -47,12 +47,31 @@ func (r *GraphReconciler) reconcileDelete(ctx context.Context, graph *unstructur
 		return ctrl.Result{RequeueAfter: systemErrorRequeueInterval}, nil
 	}
 
-	// Build a minimal instanceState for advanceFinalization.
+	// Retrieve existing instanceState from the cache so finalization progress
+	// (activeFinalization phase tracking) survives across teardown reconcile
+	// cycles. The compileTeardownDAG call above populates the cache for the
+	// active revision. If no cached state exists, create a minimal state and
+	// store it so the next teardown reconcile can pick up where this one left off.
 	rs := newReconcileScope(graph, nil)
-	teardownState := &instanceState{
-		prune: pruneCarryForward{
-			activeFinalization: map[string]*finalizationEntry{},
-		},
+	var teardownState *instanceState
+	if len(revisions) > 0 {
+		active := revisions[len(revisions)-1]
+		instanceKey := graph.GetNamespace() + "/" + active.GetName()
+		teardownState = r.Caches.get(instanceKey)
+		if teardownState == nil {
+			teardownState = &instanceState{
+				prune: pruneCarryForward{
+					activeFinalization: map[string]*finalizationEntry{},
+				},
+			}
+			r.Caches.set(instanceKey, teardownState)
+		}
+	} else {
+		teardownState = &instanceState{
+			prune: pruneCarryForward{
+				activeFinalization: map[string]*finalizationEntry{},
+			},
+		}
 	}
 
 	// -----------------------------------------------------------------------

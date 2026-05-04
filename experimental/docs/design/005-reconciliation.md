@@ -144,6 +144,11 @@ regenerates the DAG from spec. Teardown is blocked until ordering is available â
 unordered deletion. If nodes persist (finalizers), requeue. Once all nodes are pruned, remove the
 Graph's finalizer.
 
+Teardown state (finalization phase tracking) is preserved across reconcile cycles via the instance
+cache â€” the same `instanceState` used during normal reconciliation. This avoids restarting
+finalization sequences from scratch on each teardown reconcile when readyWhen takes multiple cycles
+to satisfy.
+
 #### Finalization
 
 When another node declares `finalizes` targeting a prune candidate's resource, deletion is gated on
