@@ -1,13 +1,17 @@
 package graphcontroller_test
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // Prune safety tests prove that the controller does not prune resources when
@@ -891,4 +895,129 @@ func TestPruneSafetySystemErrorBlocksPrune(t *testing.T) {
 		types.NamespacedName{Name: "prune-syserr-cm", Namespace: ns},
 		[]string{"data", "version"}, "v2"))
 	t.Log("Phase 3: recovered — ConfigMap updated to v2")
+}
+
+// TestPruneSafetyForEachOrphanPrunedDespiteError proves that forEach children
+// whose collection item has been removed are pruned even when the prune gate
+// is closed (other nodes in Error state). Per code review §5.1.
+func TestPruneSafetyForEachOrphanPrunedDespiteError(t *testing.T) {
+	t.Parallel()
+	ns := createNamespace(t)
+
+	cmGVK := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
+
+	for _, name := range []string{"source-a", "source-b"} {
+		cm := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": ns,
+				"labels":    map[string]any{"app": "orphan-test"},
+			},
+			"data": map[string]any{"value": "hello"},
+		}}
+		require.NoError(t, k8sClient.Create(ctx, cm))
+	}
+
+	divisor := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   map[string]any{"name": "divisor", "namespace": ns},
+		"data":       map[string]any{"value": "2"},
+	}}
+	require.NoError(t, k8sClient.Create(ctx, divisor))
+
+	graph := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "experimental.kro.run/v1alpha1",
+		"kind":       "Graph",
+		"metadata":   map[string]any{"name": "test-foreach-orphan-prune", "namespace": ns},
+		"spec": map[string]any{
+			"nodes": []any{
+				map[string]any{
+					"id": "sources",
+					"watch": map[string]any{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata":   map[string]any{"namespace": ns},
+						"selector":   map[string]any{"app": "orphan-test"},
+					},
+				},
+				map[string]any{
+					"id": "divisorRef",
+					"ref": map[string]any{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata":   map[string]any{"name": "divisor"},
+					},
+				},
+				map[string]any{
+					"id": "errorNode",
+					"template": map[string]any{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata":   map[string]any{"name": "error-result"},
+						"data":       map[string]any{"result": "${string(100 / int(divisorRef.data.value))}"},
+					},
+				},
+				map[string]any{
+					"id":      "children",
+					"forEach": map[string]any{"src": "${sources}"},
+					"template": map[string]any{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata":   map[string]any{"name": "${src.metadata.name}-child"},
+						"data":       map[string]any{"parent": "${src.metadata.name}"},
+					},
+				},
+			},
+		},
+	}}
+	require.NoError(t, k8sClient.Create(ctx, graph))
+	graphKey := types.NamespacedName{Name: "test-foreach-orphan-prune", Namespace: ns}
+
+	require.NoError(t, waitForGraphReady(ctx, k8sClient, graphKey))
+	for _, name := range []string{"source-a-child", "source-b-child"} {
+		cm := &unstructured.Unstructured{}
+		cm.SetGroupVersionKind(cmGVK)
+		require.NoError(t, waitForResource(ctx, k8sClient,
+			types.NamespacedName{Name: name, Namespace: ns}, cm))
+	}
+	t.Log("Phase 1: both forEach children created, Graph ready")
+
+	// Introduce Error: division by zero.
+	require.NoError(t, updateWithRetry(ctx, k8sClient, cmGVK,
+		types.NamespacedName{Name: "divisor", Namespace: ns},
+		func(obj *unstructured.Unstructured) {
+			unstructured.SetNestedField(obj.Object, "0", "data", "value")
+		}))
+	require.NoError(t, waitForGraphReadyReason(ctx, k8sClient, graphKey, "Error"))
+	t.Log("Phase 2: Graph in Error state (division by zero)")
+
+	// Delete source-a → its child should be pruned despite the Error gate.
+	sourceA := &unstructured.Unstructured{}
+	sourceA.SetGroupVersionKind(cmGVK)
+	sourceA.SetName("source-a")
+	sourceA.SetNamespace(ns)
+	require.NoError(t, k8sClient.Delete(ctx, sourceA))
+
+	// Wait for source-a to be gone, then wait for orphan prune.
+	require.NoError(t, waitForDeletion(ctx, k8sClient, cmGVK,
+		types.NamespacedName{Name: "source-a", Namespace: ns}))
+	require.NoError(t, wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 90*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(cmGVK)
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: "source-a-child", Namespace: ns}, obj)
+			return apierrors.IsNotFound(err), nil
+		}), "orphaned forEach child must be pruned even when prune gate is closed")
+	t.Log("Phase 3: source-a-child pruned despite Error gate — orphan prune works")
+
+	// source-b-child should still exist.
+	surviving := &unstructured.Unstructured{}
+	surviving.SetGroupVersionKind(cmGVK)
+	err := k8sClient.Get(ctx,
+		types.NamespacedName{Name: "source-b-child", Namespace: ns}, surviving)
+	assert.NoError(t, err, "source-b-child must survive — its collection item still exists")
+	t.Log("Phase 3: source-b-child survived — only the orphan was pruned")
 }

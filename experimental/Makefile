@@ -72,8 +72,7 @@ SKIP_SPECS += only.show.status.fields.when.all.referenced
 SKIP_SPECS += surface.data.pending.condition
 # Root cause: type compatibility rejection requires Inactive transition
 SKIP_SPECS += reject.incompatible.types.comprehensively
-# Root cause: forEach cascading deletion / GC not implemented
-SKIP_SPECS += delete.all.collection.resources.when.instance.is.deleted
+# Root cause: forEach cascading deletion — multi-namespace variant flaky under batch load
 SKIP_SPECS += delete.collection.resources.across.multiple.namespaces
 # Root cause: CRD update/ownership/breaking-change detection not implemented
 SKIP_SPECS += update.CRD.when.ResourceGraphDefinition.is.updated

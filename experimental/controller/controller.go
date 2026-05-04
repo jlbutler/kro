@@ -333,6 +333,33 @@ type prunePhaseResult struct {
 	notes   []string // informational messages for status
 }
 
+// orphanedForEachKeys returns the set of applied keys from forEach items that
+// no longer exist in the current collection expansion. These are safe to prune
+// even when the prune gate is closed — their collection item is gone.
+func orphanedForEachKeys(state *instanceState) map[string]bool {
+	if state.walk.forEach == nil || len(state.prune.previousForEachKeys) == 0 {
+		return nil
+	}
+	currentForEachKeys := map[string]bool{}
+	for _, itemKeys := range state.walk.forEach.itemKeys {
+		for _, keys := range itemKeys {
+			for _, a := range keys {
+				currentForEachKeys[a.Key] = true
+			}
+		}
+	}
+	orphans := map[string]bool{}
+	for key := range state.prune.previousForEachKeys {
+		if !currentForEachKeys[key] {
+			orphans[key] = true
+		}
+	}
+	if len(orphans) == 0 {
+		return nil
+	}
+	return orphans
+}
+
 // reconcilePrune removes resources that are no longer in the applied set.
 // It gates on summary flags (uncertain absence blocks pruning), builds the
 // full previous-applied-key universe from three sources (watch cache,
@@ -357,8 +384,17 @@ func (r *GraphReconciler) reconcilePrune(
 	// Per 005-reconciliation.md § Prune: "Uncertain absence (Pending, Blocked,
 	// Error, SystemError) blocks pruning — the resource might reappear once the
 	// blocker resolves."
+	//
+	// Exception: forEach children whose collection item no longer exists are
+	// pruned even when the gate is closed. Their collection item is gone — the
+	// resource will never reappear regardless of error resolution. Without this,
+	// Error'd children from deleted collection items leak permanently.
+	var orphanOnly map[string]bool
 	if summary.HasUncertainty() {
-		return result
+		orphanOnly = orphanedForEachKeys(state)
+		if len(orphanOnly) == 0 {
+			return result
+		}
 	}
 
 	cluster := r.cluster()
@@ -388,6 +424,20 @@ func (r *GraphReconciler) reconcilePrune(
 	// Update the previous key set for the next reconcile.
 	state.prune.updateAppliedKeys(appliedKeys)
 
+	// Record which keys came from forEach items so the next cycle's
+	// orphanedForEachKeys can identify keys whose collection item is gone.
+	if state.walk.forEach != nil {
+		forEachKeys := map[string]bool{}
+		for _, itemKeys := range state.walk.forEach.itemKeys {
+			for _, keys := range itemKeys {
+				for _, a := range keys {
+					forEachKeys[a.Key] = true
+				}
+			}
+		}
+		state.prune.previousForEachKeys = forEachKeys
+	}
+
 	// Extract static keys from superseded revisions for resources
 	// that may not yet be in the informer cache.
 	supersededDAGs := map[string]*dagpkg.DAG{}
@@ -411,6 +461,24 @@ func (r *GraphReconciler) reconcilePrune(
 		currentSet[a.Key] = a
 	}
 	candidates := collectPruneCandidates(allPreviousKeys, currentSet)
+
+	// When the prune gate is closed (errors/pending), only prune orphaned
+	// forEach candidates — resources whose collection item no longer exists.
+	if orphanOnly != nil {
+		filtered := candidates[:0]
+		for _, c := range candidates {
+			if orphanOnly[c.Key] {
+				filtered = append(filtered, c)
+			}
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			return result
+		}
+		logger.V(1).Info("pruning orphaned forEach candidates despite closed gate",
+			"orphanCount", len(candidates))
+	}
+
 	allDAGs := []*dagpkg.DAG{}
 	if dag != nil {
 		allDAGs = append(allDAGs, dag)

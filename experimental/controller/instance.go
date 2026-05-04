@@ -81,9 +81,12 @@ func (w *walkCarryForward) resetForRecompile() {
 // pruneCarryForward holds state carried forward across reconcile cycles by
 // the prune and finalization phases.
 type pruneCarryForward struct {
-	previousAppliedKeys map[string]Applied
-	deferredPruneKeys   []Applied
-	activeFinalization  map[string]*finalizationEntry
+	previousAppliedKeys  map[string]Applied
+	previousForEachKeys  map[string]bool // forEach-originated keys from the previous cycle; used by
+	                                     // orphanedForEachKeys to identify children whose collection
+	                                     // item was removed — these bypass the prune gate (§5.1 fix)
+	deferredPruneKeys    []Applied
+	activeFinalization   map[string]*finalizationEntry
 }
 
 // resetForRecompile clears prune state that should not survive recompilation.
