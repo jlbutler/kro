@@ -229,12 +229,31 @@ func integrateNodeResult(
 		return out
 	}
 	if nr.state == dagpkg.NodePending {
+		// Track consecutive pending results per node. After a threshold,
+		// escalate to NodeError — the "no such key" is likely a typo in
+		// the CEL expression, not transient data absence. Per §2.2 fix.
+		if state.walk.pendingCount == nil {
+			state.walk.pendingCount = make(map[string]int)
+		}
+		state.walk.pendingCount[node.ID]++
+		if state.walk.pendingCount[node.ID] > pendingEscalationThreshold {
+			plan.SetState(node.ID, dagpkg.NodeError)
+			out.errMsgs = append(out.errMsgs,
+				fmt.Sprintf("%s: pending for %d consecutive reconciles (possible expression typo): %v",
+					node.ID, state.walk.pendingCount[node.ID], nr.err))
+			logger.V(0).Info("pending escalated to error", "node", node.ID,
+				"consecutivePending", state.walk.pendingCount[node.ID], "error", nr.err)
+			carryForwardKeys(nodeKeys, node.ID, state)
+			return out
+		}
 		plan.SetState(node.ID, dagpkg.NodePending)
 		state.walk.previousScope[node.ID] = nr.scope
 		logger.V(1).Info("data pending for node", "node", node.ID, "error", nr.err)
 		carryForwardKeys(nodeKeys, node.ID, state)
 		return out
 	}
+	// Node resolved — reset pending counter.
+	delete(state.walk.pendingCount, node.ID)
 
 	// --- Success path ---
 
@@ -366,6 +385,13 @@ func evaluateNode(ctx context.Context, c *clusterAccess, rs *reconcileScope, nod
 
 	return nr
 }
+
+// pendingEscalationThreshold is the number of consecutive reconcile cycles
+// a node can remain in Pending state before escalating to Error. This
+// catches typos in CEL expressions (e.g., "no such key: stauts") that
+// would otherwise retry forever. At the default 5s requeue interval,
+// 10 cycles = 50s — enough for any transient data to appear.
+const pendingEscalationThreshold = 10
 
 // depGateOutcome represents the dependency gating outcome for a node.
 type depGateOutcome int

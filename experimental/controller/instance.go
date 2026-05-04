@@ -56,6 +56,8 @@ type walkCarryForward struct {
 	previousKeys       map[string][]Applied
 	previousPlanStates *dagpkg.PlanState
 	forEach            *forEachCarryForward // nil until first forEach evaluation
+	pendingCount       map[string]int       // nodeID → consecutive pending cycles; escalates to
+	                                        // NodeError after pendingEscalationThreshold (§2.2 fix)
 }
 
 // resetForRecompile clears walk state that is structurally incompatible
