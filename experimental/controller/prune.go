@@ -301,8 +301,14 @@ func (c *clusterAccess) findManagedResourceKeys(ctx context.Context, rs *reconci
 
 		// Cannot use label selector with DNS subdomain keys — list all and
 		// filter client-side. This only runs during teardown (not hot path).
+		// Use empty namespace for cluster-scoped resources so the list
+		// actually finds them — cluster-scoped resources have no namespace.
+		ns := rs.namespace
+		if isNS, known := c.scope.IsNamespaced(gvk); known && !isNS {
+			ns = ""
+		}
 		if err := c.reader.List(ctx, list, &client.ListOptions{
-			Namespace: rs.namespace,
+			Namespace: ns,
 		}); err != nil {
 			continue // skip GVKs we can't list (e.g., CRD deleted)
 		}
