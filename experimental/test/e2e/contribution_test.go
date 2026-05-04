@@ -1007,3 +1007,74 @@ func TestPatchMapFieldOwnership(t *testing.T) {
 		"external manager's field ownership must be unaffected by release apply")
 	t.Log("Map field ownership proved: contributed keys deleted (sole owner released), external keys untouched")
 }
+
+// TestForceApplyEvictsThirdPartyManagers proves that forceApply: true on a
+// template node evicts third-party SSA field managers after taking ownership.
+// Per code review §7.1 and 003-ownership.md § Release Apply (eviction release).
+func TestForceApplyEvictsThirdPartyManagers(t *testing.T) {
+	t.Parallel()
+	ns := createNamespace(t)
+
+	cmGVK := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
+
+	// Create a ConfigMap via SSA with a third-party field manager.
+	thirdPartyPayload := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   map[string]any{"name": "contested-cm", "namespace": ns},
+		"data":       map[string]any{"owner": "external-controller", "shared": "original"},
+	}}
+	data, err := json.Marshal(thirdPartyPayload.Object)
+	require.NoError(t, err)
+	require.NoError(t, k8sClient.Patch(ctx, thirdPartyPayload,
+		client.RawPatch(types.ApplyPatchType, data),
+		client.FieldOwner("external-controller"), client.ForceOwnership))
+
+	// Create a Graph with forceApply that manages the same ConfigMap.
+	graph := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "experimental.kro.run/v1alpha1",
+		"kind":       "Graph",
+		"metadata":   map[string]any{"name": "test-force-evict", "namespace": ns},
+		"spec": map[string]any{
+			"nodes": []any{
+				map[string]any{
+					"id":         "cm",
+					"forceApply": true,
+					"template": map[string]any{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata":   map[string]any{"name": "contested-cm"},
+						"data":       map[string]any{"owner": "graph-controller", "shared": "taken"},
+					},
+				},
+			},
+		},
+	}}
+	require.NoError(t, k8sClient.Create(ctx, graph))
+	graphKey := types.NamespacedName{Name: "test-force-evict", Namespace: ns}
+	require.NoError(t, waitForGraphReady(ctx, k8sClient, graphKey))
+
+	// Verify: third-party manager evicted from managedFields.
+	require.NoError(t, wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 15*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(cmGVK)
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "contested-cm", Namespace: ns}, obj); err != nil {
+				return false, nil
+			}
+			for _, mf := range obj.GetManagedFields() {
+				if mf.Manager == "external-controller" && mf.Operation == "Apply" {
+					return false, nil
+				}
+			}
+			return true, nil
+		}))
+
+	// Verify the Graph's data took over.
+	final := &unstructured.Unstructured{}
+	final.SetGroupVersionKind(cmGVK)
+	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: "contested-cm", Namespace: ns}, final))
+	finalData, _, _ := unstructured.NestedStringMap(final.Object, "data")
+	assert.Equal(t, "graph-controller", finalData["owner"])
+	assert.Equal(t, "taken", finalData["shared"])
+}
