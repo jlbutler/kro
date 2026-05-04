@@ -41,8 +41,10 @@ type instanceState struct {
 // compiledArtifacts holds the output of a single compilation. Replaced
 // atomically on every compileRevision call.
 type compiledArtifacts struct {
-	compiled *compiler.CompiledGraph
-	dag      *dagpkg.DAG
+	compiled             *compiler.CompiledGraph
+	dag                  *dagpkg.DAG
+	lastSchemaGeneration int64 // SchemaGeneration at compile time; mismatch triggers recompile
+	lastDynamicGVKCount  int   // len(resolvedDynamicGVKs) at compile time; new GVKs trigger recompile
 }
 
 // walkCarryForward holds state carried forward across reconcile cycles by

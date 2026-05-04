@@ -1,9 +1,11 @@
-# Optimizations (Future Work — Do Not Implement)
+# Optimizations
 
 Performance optimizations layered on top of the core
 [compilation](004-compilation.md) and [reconciliation](005-reconciliation.md) designs. These are
-additive — the core algorithms are correct without them. Implement the core designs first; add these
-optimizations once the core is stable and profiled.
+additive — the core algorithms are correct without them.
+
+**Implementation status:** Compilation Cache and Apply-Hash are implemented. Metadata Informers,
+Parallel Evaluation, and Output-Hash remain future work.
 
 ## Metadata Informers
 

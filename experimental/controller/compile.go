@@ -18,8 +18,10 @@ import (
 )
 
 // compileRevision parses a GraphRevision's spec, compiles it, and returns the
-// compiled graph and per-instance state. Always recompiles; instance state is
-// preserved across reconciles for correctness fields (previousAppliedKeys, etc.).
+// compiled graph and per-instance state. Skips recompilation when the schema
+// generation hasn't changed since the last compile (the common case for
+// steady-state reconciles). Instance state is preserved across reconciles for
+// correctness fields (previousAppliedKeys, etc.).
 func (r *GraphReconciler) compileRevision(ctx context.Context, namespace string, revision *unstructured.Unstructured) (*graphpkg.GraphSpec, *instanceState, error) {
 	instanceKey := revision.GetNamespace() + "/" + revision.GetName()
 
@@ -27,6 +29,22 @@ func (r *GraphReconciler) compileRevision(ctx context.Context, namespace string,
 	// a previous reconcile). These serve as hints for schema resolution of
 	// dynamic GVK nodes on subsequent compilations.
 	existing := r.Caches.get(instanceKey)
+
+	// Fast path: if the schema generation hasn't changed since the last
+	// compile and no new dynamic GVKs have been resolved, the artifact is
+	// still valid. Skip recompilation entirely.
+	// Per 004-compilation.md § Compilation Cache: "Staleness is one integer
+	// comparison: current generation exceeds the artifact's recorded generation."
+	if existing != nil && existing.compilation.compiled != nil &&
+		r.SchemaGen != nil && existing.compilation.lastSchemaGeneration == r.SchemaGen.Generation() &&
+		existing.compilation.lastDynamicGVKCount == len(existing.resolvedDynamicGVKs) {
+		spec, err := extractRevisionSpec(revision)
+		if err != nil {
+			return nil, nil, err
+		}
+		return spec, existing, nil
+	}
+
 	var dynamicGVKHints map[string]schema.GroupVersionKind
 	if existing != nil {
 		dynamicGVKHints = existing.resolvedDynamicGVKs
@@ -63,12 +81,20 @@ func (r *GraphReconciler) compileRevision(ctx context.Context, namespace string,
 	// previousAppliedKeys, activeFinalization) are preserved.
 	if existing != nil {
 		existing.recompile(compiled, dag)
+		if r.SchemaGen != nil {
+			existing.compilation.lastSchemaGeneration = r.SchemaGen.Generation()
+		}
+		existing.compilation.lastDynamicGVKCount = len(existing.resolvedDynamicGVKs)
 		r.Caches.set(instanceKey, existing)
 		return spec, existing, nil
 	}
 
 	// New instance — create fresh mutable state.
 	state := newInstanceState(compiled, dag)
+	if r.SchemaGen != nil {
+		state.compilation.lastSchemaGeneration = r.SchemaGen.Generation()
+	}
+	state.compilation.lastDynamicGVKCount = len(state.resolvedDynamicGVKs)
 	r.Caches.set(instanceKey, state)
 	return spec, state, nil
 }
