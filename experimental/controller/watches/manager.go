@@ -323,6 +323,29 @@ func (m *WatchManager) GetLabels(gvr schema.GroupVersionResource, namespace, nam
 	return maps.Clone(accessor.GetLabels()), true
 }
 
+// GetAnnotations returns annotations from the metadata informer cache.
+func (m *WatchManager) GetAnnotations(gvr schema.GroupVersionResource, namespace, name string) (map[string]string, bool) {
+	m.mu.RLock()
+	w, ok := m.watches[gvr]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	key := name
+	if namespace != "" {
+		key = namespace + "/" + name
+	}
+	item, exists, err := w.informer.GetStore().GetByKey(key)
+	if err != nil || !exists {
+		return nil, false
+	}
+	accessor, err := meta.Accessor(item)
+	if err != nil {
+		return nil, false
+	}
+	return maps.Clone(accessor.GetAnnotations()), true
+}
+
 func (m *WatchManager) defaultCreateInformer(gvr schema.GroupVersionResource) cache.SharedIndexInformer {
 	return metadatainformer.NewFilteredMetadataInformer(
 		m.client, gvr, metav1.NamespaceAll, m.resync,

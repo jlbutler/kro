@@ -226,6 +226,11 @@ func (c *WatchCoordinator) GetLabels(gvr schema.GroupVersionResource, namespace,
 	return c.watches.GetLabels(gvr, namespace, name)
 }
 
+// GetAnnotations delegates to the underlying WatchManager.
+func (c *WatchCoordinator) GetAnnotations(gvr schema.GroupVersionResource, namespace, name string) (map[string]string, bool) {
+	return c.watches.GetAnnotations(gvr, namespace, name)
+}
+
 // RouteEvent routes an informer event to all matching Graphs and enqueues
 // them for reconciliation.
 func (c *WatchCoordinator) RouteEvent(event watchEvent) {

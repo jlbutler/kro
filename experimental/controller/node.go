@@ -242,6 +242,41 @@ func (c *clusterAccess) reconcileApply(ctx context.Context, rs *reconcileScope, 
 		return Applied{}, fmt.Errorf("%s %s: %w", nodeType, node.ID, err)
 	}
 
+	// Apply-hash optimization: skip SSA write when the desired state hasn't
+	// changed. Per 007-optimizations.md § Evaluation Caching: "apply-hash
+	// hashes desired state for SSA. Match → skip the write."
+	desiredHash := hashEvalMap(evalMap)
+	stampApplyHash(evalMap, desiredHash)
+
+	if rs.watcher != nil {
+		gvr := gvkToGVR(graphpkg.GVKFromMap(evalMap))
+		md, _ := evalMap["metadata"].(map[string]any)
+		name, _ := md["name"].(string)
+		ns, _ := md["namespace"].(string)
+		if existingAnnotations, ok := rs.watcher.GetAnnotations(gvr, ns, name); ok {
+			if existingAnnotations[applyHashAnnotation] == desiredHash {
+				// Hash match — resource is already at desired state.
+				// Still need a full GET (not informer) to populate scope —
+				// metadata informers only carry ObjectMeta, not spec/status.
+				obj := &unstructured.Unstructured{}
+				obj.SetGroupVersionKind(graphpkg.GVKFromMap(evalMap))
+				obj.SetName(name)
+				obj.SetNamespace(ns)
+				if getErr := c.reader.Get(ctx, client.ObjectKeyFromObject(obj), obj); getErr == nil {
+					eval.scope[node.ID] = graphpkg.NormalizeTypes(obj.Object)
+					eval.markUpdated(node.ID, true)
+					logger.V(1).Info("apply-hash match, skipped SSA write", "node", node.ID)
+					return Applied{
+						Key:       resourceKey(obj),
+						NodeType:  nodeType,
+						HasStatus: evalMap["status"] != nil,
+					}, nil
+				}
+				// GET failed — fall through to normal SSA apply
+			}
+		}
+	}
+
 	applied, err := c.applySSA(ctx, rs, evalMap, node.ID, nodeType, eval.effectiveGeneration, node.Lifecycle.ForceApply())
 	if err != nil {
 		return Applied{}, err

@@ -68,6 +68,11 @@ func (gw *GraphWatcher) GetLabels(gvr schema.GroupVersionResource, namespace, na
 	return gw.coord.GetLabels(gvr, namespace, name)
 }
 
+// GetAnnotations returns annotations from the metadata informer cache.
+func (gw *GraphWatcher) GetAnnotations(gvr schema.GroupVersionResource, namespace, name string) (map[string]string, bool) {
+	return gw.coord.GetAnnotations(gvr, namespace, name)
+}
+
 // Done finalizes the watch set for this reconcile cycle.
 //
 // On commit, the buffered requests are flushed to the coordinator's

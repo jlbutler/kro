@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -413,4 +414,54 @@ func releaseApply(ctx context.Context, c client.Client, gvk schema.GroupVersionK
 		return nil, fmt.Errorf("release apply for %s/%s: %w", namespace, name, err)
 	}
 	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Apply-hash optimization
+// ---------------------------------------------------------------------------
+
+const applyHashAnnotation = "internal.kro.run/template-hash"
+
+func hashEvalMap(evalMap map[string]any) string {
+	cleaned := make(map[string]any, len(evalMap))
+	for k, v := range evalMap {
+		if k == "metadata" {
+			if md, ok := v.(map[string]any); ok {
+				cleanedMD := make(map[string]any, len(md))
+				for mk, mv := range md {
+					if mk == "annotations" {
+						continue
+					}
+					cleanedMD[mk] = mv
+				}
+				cleaned[k] = cleanedMD
+				continue
+			}
+		}
+		cleaned[k] = v
+	}
+	data, err := json.Marshal(cleaned)
+	if err != nil {
+		return ""
+	}
+	h := fnv.New64a()
+	h.Write(data)
+	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+func stampApplyHash(evalMap map[string]any, hash string) {
+	if hash == "" {
+		return
+	}
+	md, ok := evalMap["metadata"].(map[string]any)
+	if !ok {
+		md = map[string]any{}
+		evalMap["metadata"] = md
+	}
+	annotations, ok := md["annotations"].(map[string]any)
+	if !ok {
+		annotations = map[string]any{}
+		md["annotations"] = annotations
+	}
+	annotations[applyHashAnnotation] = hash
 }
