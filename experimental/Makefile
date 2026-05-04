@@ -44,7 +44,8 @@ PASSING_COMPAT_FILES := \
   status_test.go \
   data_pending_test.go \
   type_compatibility_test.go \
-  crd_test.go
+  crd_test.go \
+  instance_cluster_scoped_test.go
 
 # Specs to skip in compat-presubmit. Each token is a Ginkgo skip regex
 # applied via COMPAT_SKIP_SPECS env var → suiteConfig.SkipStrings.

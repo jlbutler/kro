@@ -178,10 +178,10 @@ spec:
                       [{"id": "schema", "ref": {
                         "apiVersion": schema.spec.schema.group + "/" + schema.spec.schema.apiVersion,
                         "kind": schema.spec.schema.kind,
-                        "metadata": {
-                          "name": instance.metadata.name,
-                          "namespace": instance.metadata.namespace
-                        }
+                        "metadata": {"name": instance.metadata.name}.merge(
+                          has(instance.metadata.namespace) && instance.metadata.namespace != ""
+                            ? {"namespace": instance.metadata.namespace} : {}
+                        )
                       }}]
                       + schema.spec.resources.filter(r, has(r.externalRef) && !has(r.externalRef.metadata.selector)).map(r,
                         {"id": r.id, "ref": {
@@ -212,11 +212,13 @@ spec:
                             "labels": (has(r.template.metadata) && has(r.template.metadata.labels) ? r.template.metadata.labels : {}).merge({
                               "kro.run/instance-id": string(instance.metadata.uid),
                               "kro.run/instance-name": instance.metadata.name,
-                              "kro.run/instance-namespace": instance.metadata.namespace,
                               "kro.run/instance-group": schema.spec.schema.group,
                               "kro.run/instance-version": schema.spec.schema.apiVersion,
                               "kro.run/instance-kind": schema.spec.schema.kind
-                            })
+                            }).merge(
+                              has(instance.metadata.namespace) && instance.metadata.namespace != ""
+                                ? {"kro.run/instance-namespace": instance.metadata.namespace} : {}
+                            )
                           })
                         })
                       }))
@@ -224,11 +226,10 @@ spec:
                          "patch": {
                         "apiVersion": schema.spec.schema.group + "/" + schema.spec.schema.apiVersion,
                         "kind": schema.spec.schema.kind,
-                        "metadata": {
-                          "name": instance.metadata.name,
-                          "namespace": instance.metadata.namespace,
-                          "finalizers": ["experimental.kro.run/graph"]
-                        },
+                        "metadata": {"name": instance.metadata.name, "finalizers": ["experimental.kro.run/graph"]}.merge(
+                          has(instance.metadata.namespace) && instance.metadata.namespace != ""
+                            ? {"namespace": instance.metadata.namespace} : {}
+                        ),
                         "status": {
                           "state": "${" + (schema.spec.resources.size() == 0 ? "true" : schema.spec.resources.map(r, r.id + ".ready().orValue(false)").join(" && ")) + " ? 'ACTIVE' : 'IN_PROGRESS'}",
                           "conditions": [
