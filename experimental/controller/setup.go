@@ -191,12 +191,7 @@ func SetupWithManager(mgr ctrl.Manager, restConfig *rest.Config, maxWorkers int)
 			}
 			ns := key[:slash]
 			revName := key[slash+1:]
-			// Revision name format: "graphname-gNNNNN" — extract graph name.
-			lastDash := strings.LastIndex(revName, "-g")
-			graphName := revName
-			if lastDash >= 0 && lastDash+2 < len(revName) {
-				graphName = revName[:lastDash]
-			}
+			graphName := graphNameFromRevision(revName)
 			obj := &unstructured.Unstructured{}
 			obj.SetName(graphName)
 			obj.SetNamespace(ns)
@@ -295,4 +290,28 @@ func SetupWithManager(mgr ctrl.Manager, restConfig *rest.Config, maxWorkers int)
 	}
 
 	return watchMgr.Shutdown, reconciler.Caches, nil
+}
+
+// graphNameFromRevision extracts the graph name from a revision name.
+// Revision names follow the format "graphname-gNNNNN" where N is a digit.
+// A naive LastIndex("-g") breaks when the graph name itself contains "-g"
+// (e.g. "staging-gateway-g00001" → must return "staging-gateway", not "staging").
+// We validate that everything after the "-g" split point is digits.
+func graphNameFromRevision(revName string) string {
+	for i := len(revName) - 1; i >= 1; i-- {
+		if revName[i-1] == '-' && revName[i] == 'g' && i+1 < len(revName) {
+			suffix := revName[i+1:]
+			allDigits := true
+			for _, c := range suffix {
+				if c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				return revName[:i-1]
+			}
+		}
+	}
+	return revName
 }
